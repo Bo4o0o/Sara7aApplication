@@ -23,7 +23,9 @@ const userSchema = new Schema({
     },
     password: {
         type: String,
-        required: [true, "Password is required"],
+        required:function () {
+            return this.provider === ProviderEnum.SYSTEM
+        },
     },
     DOB: Date,
     phone:String,

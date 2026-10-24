@@ -1,8 +1,9 @@
 import { authRouter , userRouter , messageRouter } from './Modules/index.js';
 import{ globalErrorHandler , BadRequestException } from './utils/response/error.response.js';
 import connectDB from './DB/connection.js';
+import cors from "cors"
 const bootstrap = async (app, express) => {
-  app.use(express.json());
+  app.use(express.json() ,cors());
 
   await connectDB();
   
