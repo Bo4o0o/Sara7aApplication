@@ -8,7 +8,10 @@ import { decrypt, encrypt } from '../../utils/security/encryption.security.js';
 import {  getNewLoginCredentials } from '../../utils/token/token.js';
 import {OAuth2Client} from "google-auth-library"
 import { CLIENT_ID } from '../../../config/config.service.js';
-import { ProviderEnum } from '../../utils/enums/user.enum.js';
+import { LogoutTypeEnum, ProviderEnum } from '../../utils/enums/user.enum.js';
+import { emailEvent } from '../../utils/events/email.events.js';
+import { generateOTP } from '../../utils/generateOTP.js';
+import TokenModel from '../../DB/Models/token.model.js'
 export const signup = async (req, res) => {
     const {
         userName,
@@ -31,6 +34,11 @@ export const signup = async (req, res) => {
         algorithm: HashEnum.BCRYPT
     });
     const encryptedPhone = encrypt(phone);
+    const otp = generateOTP();
+    const hashedOtp = await generateHash({
+        plainText: JSON.stringify(otp),
+        algorithm: HashEnum.ARGON2
+    });
     const newUser = await dbService.create({
         model: UserModel,
         data: [{
@@ -38,10 +46,16 @@ export const signup = async (req, res) => {
             email,
             password: hashedPassword,
             phone :encryptedPhone,
+            confirmEmailOtp: hashedOtp,
             gender,
             role,
             DOB
         }]
+    });
+    emailEvent.emit("sendEmail", {
+        to: email,
+        code: otp,
+        firstName: userName
     });
     return successResponse({
         res,
@@ -54,18 +68,27 @@ export const signup = async (req, res) => {
 
 export const login = async (req, res) => {
     const { email, password } = req.body;
-    const user = await dbService.findOne({model: UserModel, filter: { email } });
+    const user = await dbService.findOneAndUpdate({model: UserModel, filter: { email , confirmEmail: { $exists: true } } , update: { $unset: {changeCredentialTime:true}} });
     if(!user) throw NotFoundException("User not found");
-    const token = await getNewLoginCredentials(user);
     const isMatch = await compareHash({
         plainText: password,
         cipherText: user.password,
-        algorithm: HashEnum.BCRYPT
+        algorithm: HashEnum.ARGON2
     });
-
+    const token = await getNewLoginCredentials(user);
     if(!isMatch) throw BadRequestException("Invalid credentials");
     if(user.phone) user.phone = decrypt(user.phone);
     return successResponse({res, message : "User logged in successfully",statusCode: 200,  data: {token}});
+}
+
+export const confirmEmail = async (req,res) => {
+    const {email,otp} = req.body;
+    const user = await dbService.findOne({model:UserModel , filter:{email , confirmEmail:{$exists:false} , confirmEmailOtp:{$exists:true}}})
+    if(!user) throw BadRequestException("User not found or already confirmed");
+    const isOtpValid = await compareHash({plainText: otp , cipherText:user.confirmEmailOtp , algorithm:HashEnum.ARGON2});
+    if(!isOtpValid) throw BadRequestException("Invalid OTP");
+    await dbService.updateOne({model:UserModel , filter:{email} , update:{confirmEmail:Date.now() , $unset:{confirmEmailOtp:true}}});
+    successResponse({res , message:"Email confirmed successfully" })
 }
 
 export const refreshToken = async (req,res) => {
@@ -73,6 +96,7 @@ export const refreshToken = async (req,res) => {
 
     successResponse({res , message : "Done" , data: {tokens}})
 }
+
 async function verifyGoogleAccount({idToken}) {
     const client = new OAuth2Client();
   const ticket = await client.verifyIdToken({
@@ -82,6 +106,7 @@ async function verifyGoogleAccount({idToken}) {
   const payload = ticket.getPayload();
   return payload
 }
+
 export const loginWithGmail = async(req,res) =>{
     const {idToken} = req.body;
 
@@ -107,4 +132,63 @@ export const loginWithGmail = async(req,res) =>{
         const tokens = await getNewLoginCredentials(newUser)
             successResponse({res , message:"Done", statusCode:201 , data:{tokens}})
     }
+}
+
+export const forgetPassword = async(req,res) => {
+    const {email} = req.body;
+    const otp = generateOTP();
+    const hashedOtp = await generateHash({
+        plainText: JSON.stringify(otp),
+        algorithm: HashEnum.ARGON2
+    });
+    const user = await dbService.findOneAndUpdate({model:UserModel , filter:{email , provider:ProviderEnum.SYSTEM , confirmEmail:{$exists:true}} , update:{forgetPasswordOtp:hashedOtp}});
+    if(!user) throw BadRequestException("Invalid account");
+    emailEvent.emit("forgetPassword", {
+        to: email,
+        code: otp,
+        firstName: user.firstName
+    });
+    successResponse({res , message:"OTP sent to your email"})
+};
+
+export const resetPassword = async(req,res) => {
+    const {email,otp,newPassword} = req.body;
+    const user = await dbService.findOne({model:UserModel ,
+         filter:{email , provider:ProviderEnum.SYSTEM , confirmEmail:{$exists:true} , forgetPasswordOtp:{$exists:true}}});
+         if(!user) throw BadRequestException("Invalid account");
+    const  isOtpValid = await compareHash({plainText: otp , cipherText:user.forgetPasswordOtp , algorithm:HashEnum.ARGON2});
+            if(!isOtpValid) throw BadRequestException("Invalid OTP");
+            const hashedPassword = await generateHash({
+                plainText: newPassword,
+                algorithm: HashEnum.ARGON2
+            });
+            await dbService.updateOne({model:UserModel , filter:{email} , update:{password:hashedPassword , $unset:{forgetPasswordOtp:true}}});
+            successResponse({res , message:"Password reset successfully"})
+}
+
+export const logout = async(req,res) => {
+    const {flag} = req.query;
+    let status = 200;
+    switch (flag) {
+        case LogoutTypeEnum.Logout:
+            await dbService.create({model:TokenModel ,
+                data: [
+                    {
+                        jti:req.decoded.jti,
+                        userId:req.user._id,
+                        expiresIn:new Date(req.decoded.exp * 1000)
+                    },
+                ],
+             });
+             status = 201;
+            break;
+        case LogoutTypeEnum.LogoutFromAll:
+            await dbService.updateOne({model:UserModel , filter:{_id:req.user._id} , update:{changeCredentialTime:Date.now()}});
+            status = 200;
+            break;
+        default:
+            status = 400;
+            throw BadRequestException("Invalid flag");
+    }
+    successResponse({res , message:"Logged out successfully" , statusCode:status})
 }

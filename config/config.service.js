@@ -1,6 +1,7 @@
 import {resolve} from 'node:path';
 import dotenv from 'dotenv';
 import { rootCertificates } from 'node:tls';
+import e from 'cors';
 const envPath =  {
     development : `dev.env`,
     production : `prod.env`,
@@ -21,3 +22,5 @@ export const JWT_ADMIN_SECRET_REFRESH = process.env.JWT_ADMIN_SECRET_REFRESH
 export const JWT_EXPIRES_IN_ACCESS = process.env.JWT_EXPIRES_IN_ACCESS
 export const JWT_EXPIRES_IN_REFRESH = process.env.JWT_EXPIRES_IN_REFRESH
 export const CLIENT_ID = process.env.CLIENT_ID
+export const USER_EMAIL = process.env.USER_EMAIL
+export const USER_PASSWORD = process.env.USER_PASSWORD

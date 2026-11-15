@@ -4,6 +4,9 @@ import { EXPIRES_IN, JWT_ADMIN_SECRET_ACCESS, JWT_ADMIN_SECRET_REFRESH, JWT_USER
 import {BadRequestException, NotFoundException} from "../../utils/response/error.response.js"
 import {findById} from "../../DB/database.repository.js"
 import UserModel from "../../DB/Models/user.model.js"
+import TokenModel from "../../DB/Models/token.model.js"
+import {v4 as uuid} from "uuid";
+import * as dbService from '../../DB/database.repository.js';
 export const generateToken = ({payload, secretKey = JWT_SECRET , options = {expiresIn :Number(EXPIRES_IN)}})=>{
     return jwt.sign(payload,secretKey,options)
 }
@@ -36,15 +39,16 @@ export const getNewLoginCredentials = async (user) => {
     const signature = await getSignature({
         signatureLevel : user.role != RoleEnum.ADMIN?SignatureEnum.USER : SignatureEnum.ADMIN
     });
+    const jwtid = uuid();
     const accessToken = generateToken({
         payload:{id:user._id},
         secretKey:signature.accessSignature,
-        options:{expiresIn:JWT_EXPIRES_IN_ACCESS}
+        options:{expiresIn:JWT_EXPIRES_IN_ACCESS , jwtid}
     });
     const refreshToken = generateToken({
         payload:{id:user._id},
         secretKey:signature.refreshSignature,
-        options:{expiresIn:JWT_EXPIRES_IN_REFRESH}
+        options:{expiresIn:JWT_EXPIRES_IN_REFRESH , jwtid}
     });
     return {accessToken , refreshToken };
 }
@@ -54,7 +58,10 @@ export const decodedToken = async ({authorization ,tokenType =  TokenTypeEnum.AC
     if(!Bearer || !token) throw BadRequestException({message:"Invalid token"});
     let signature = await getSignature({signatureLevel: Bearer === "ADMIN" ? SignatureEnum.ADMIN : SignatureEnum.USER ,  });
     const decoded = verifyToken({token , secretKey : tokenType === TokenTypeEnum.ACCESS ? signature.accessSignature : signature.refreshSignature});
+    const isRevoked = await dbService.findOne({model:TokenModel , filter:{jtid:decoded.jti }});
+    if(isRevoked) throw BadRequestException({message:"Token is revoked , please login again"});
     const user = await findById({model : UserModel , id :decoded.id });
     if(!user) throw NotFoundException({message:"Not Registered Account "});
+    if(user.changeCredentialTime?.getTime() || 0 > decoded.iat * 1000) throw BadRequestException({message:"Token is expired , please login again"});
     return {user , decoded};
 }
